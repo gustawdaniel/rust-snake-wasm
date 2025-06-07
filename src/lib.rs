@@ -1,18 +1,20 @@
-﻿mod utils;
+﻿// === Modules and Imports ===
+mod utils;
+
 use std::cmp::PartialEq;
 use std::convert::TryInto;
-use wasm_bindgen::prelude::*;
 use std::fmt;
+use wasm_bindgen::prelude::*;
 use wasm_timer::Instant;
 
+// === External JS Bindings ===
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = window)]
-    pub fn alert(s: &str);
     #[wasm_bindgen(js_namespace = Math)]
     fn random() -> f64;
 }
 
+// === Shared Enums and Structs ===
 #[wasm_bindgen]
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,12 +33,26 @@ pub enum DirectionName {
 }
 
 #[wasm_bindgen]
+#[derive(Debug, Clone, Copy)]
+pub enum UniverseTopology {
+    Flat,
+    Toroidal,
+}
+
+#[wasm_bindgen]
 #[derive(Clone)]
 pub struct Position {
     x: u32,
     y: u32,
 }
 
+impl PartialEq for Position {
+    fn eq(&self, other: &Self) -> bool {
+        (self.x == other.x) && (self.y == other.y)
+    }
+}
+
+// === Snake ===
 #[wasm_bindgen]
 pub struct Direction {
     vx: i32,
@@ -45,7 +61,6 @@ pub struct Direction {
 
 #[wasm_bindgen]
 pub struct Snake {
-    // head: Position,
     body: Vec<Position>,
     direction: Direction,
 }
@@ -78,21 +93,11 @@ impl Snake {
     }
 
     pub fn has_index(&self, index: u32, universe_width: u32) -> bool {
-        self.body.iter().any(|p| {
-            let idx = p.y * universe_width + p.x;
-
-            idx == index
-        })
+        self.body.iter().any(|p| p.y * universe_width + p.x == index)
     }
 }
 
-#[wasm_bindgen]
-#[derive(Debug, Clone, Copy)]
-pub enum UniverseTopology {
-    Flat,
-    Toroidal,
-}
-
+// === FPS Counter ===
 pub struct FpsCounter {
     last_frame: Instant,
     frames: u32,
@@ -109,20 +114,22 @@ impl FpsCounter {
     }
 
     pub fn tick(&mut self, fps_measurements: u32) {
-        const AVG_LEARNING_RATE: f64 = 0.01;
+        const AVG_LEARNING_RATE: f64 = 0.001;
 
         let now = Instant::now();
-        let elapsed = now.duration_since(self.last_frame).as_nanos() as f64 / 1_000_000_000.0; // Convert to seconds
+        let elapsed = now.duration_since(self.last_frame).as_nanos() as f64 / 1_000_000_000.0;
         self.last_frame = now;
 
-        if self.frames != 0 {
-            self.fps = self.fps * (1.0-AVG_LEARNING_RATE) + ((fps_measurements as f64) / elapsed) * AVG_LEARNING_RATE; // Exponential moving average
+        if self.frames != 0 && elapsed > 0.0 {
+            self.fps = self.fps * (1.0 - AVG_LEARNING_RATE)
+                + ((fps_measurements as f64) / elapsed) * AVG_LEARNING_RATE;
         }
 
         self.frames += 1;
     }
 }
 
+// === Universe ===
 #[wasm_bindgen]
 pub struct Universe {
     width: u32,
@@ -135,38 +142,28 @@ pub struct Universe {
     counter: FpsCounter,
 }
 
-impl PartialEq for Position {
-    fn eq(&self, other: &Self) -> bool {
-        (self.x == other.x) && (self.y == other.y)
-    }
-}
-
 #[wasm_bindgen]
 impl Universe {
-    fn add_u32_i32(&self, u: u32, i: i32, modulo: u32) -> u32 {
-        (u as i64 + i as i64).rem_euclid(modulo as i64) as u32
-    }
+    pub fn new(snake: Snake, fps_target: f64) -> Universe {
+        utils::set_panic_hook();
 
-    fn randomize_apple(&mut self) {
-        let apple_x = random_position(self.width.try_into().unwrap()) as u32;
-        let apple_y = random_position(self.height.try_into().unwrap()) as u32;
+        let width: u32 = 64;
+        let height: u32 = 64;
 
-        let apple_index = self.get_index(apple_y.try_into().unwrap(), apple_x.try_into().unwrap());
-        if self.cells[apple_index] == Cell::Dead {
-            self.cells[apple_index] = Cell::Alive; // Place an apple
-        } else {
-            // If the cell is already occupied, try again
-            self.randomize_apple();
+        let cells = (0..width * height)
+            .map(|i| if snake.has_index(i, width) { Cell::Alive } else { Cell::Dead })
+            .collect();
+
+        Universe {
+            width,
+            height,
+            cells,
+            snake,
+            apple: None,
+            game_over: false,
+            topology: UniverseTopology::Toroidal,
+            counter: FpsCounter::new(fps_target),
         }
-
-        self.apple = Some(Position {
-            x: apple_x,
-            y: apple_y,
-        });
-    }
-
-    fn get_index(&self, row: u32, column: u32) -> usize {
-        (row * self.width + column) as usize
     }
 
     pub fn tick(&mut self, fps_measurements: u32) {
@@ -177,11 +174,9 @@ impl Universe {
         let new_head = match self.topology {
             UniverseTopology::Flat => {
                 let head = self.snake.body.first().unwrap();
-
                 let new_x = head.x as i32 + self.snake.direction.vx;
                 let new_y = head.y as i32 + self.snake.direction.vy;
 
-                // Game over if out of bounds
                 if new_x < 0 || new_y < 0 || new_x >= self.width as i32 || new_y >= self.height as i32 {
                     self.game_over = true;
                     return;
@@ -191,24 +186,13 @@ impl Universe {
                     x: new_x as u32,
                     y: new_y as u32,
                 }
-            },
-            UniverseTopology::Toroidal => {
-                Position {
-                    x: self.add_u32_i32(
-                        self.snake.body.first().unwrap().x,
-                        self.snake.direction.vx,
-                        self.width,
-                    ),
-                    y: self.add_u32_i32(
-                        self.snake.body.first().unwrap().y,
-                        self.snake.direction.vy,
-                        self.height,
-                    ),
-                }
+            }
+            UniverseTopology::Toroidal => Position {
+                x: self.add_u32_i32(self.snake.body.first().unwrap().x, self.snake.direction.vx, self.width),
+                y: self.add_u32_i32(self.snake.body.first().unwrap().y, self.snake.direction.vy, self.height),
             },
         };
 
-        // Collision with body
         if self.snake.body.contains(&new_head) {
             self.game_over = true;
             return;
@@ -231,8 +215,8 @@ impl Universe {
 
         self.snake.body.insert(0, new_head);
         let new_idx = self.get_index(
-                    self.snake.body.first().unwrap().y,
-                    self.snake.body.first().unwrap().x,
+            self.snake.body.first().unwrap().y,
+            self.snake.body.first().unwrap().x
         );
         next[new_idx] = Cell::Alive;
 
@@ -247,37 +231,8 @@ impl Universe {
         }
     }
 
-
     pub fn on_click(&mut self, direction: DirectionName) {
         self.snake.set_direction_name(direction);
-    }
-
-    pub fn new(snake: Snake, fps_target: f64) -> Universe {
-        utils::set_panic_hook();
-
-        let width: u32 = 64;
-        let height: u32 = 64;
-
-        let cells = (0..width * height)
-            .map(|i| {
-                if snake.has_index(i, width) {
-                    Cell::Alive
-                } else {
-                    Cell::Dead
-                }
-            })
-            .collect();
-
-        Universe {
-            width,
-            height,
-            cells,
-            snake,
-            apple: None,
-            game_over: false,
-            topology: UniverseTopology::Toroidal,
-            counter: FpsCounter::new(fps_target),
-        }
     }
 
     pub fn render(&self) -> String {
@@ -309,7 +264,7 @@ impl Universe {
     }
 
     pub fn topology(&self) -> UniverseTopology {
-        self.topology.clone()
+        self.topology
     }
 
     pub fn toggle_topology(&mut self) {
@@ -318,8 +273,31 @@ impl Universe {
             UniverseTopology::Toroidal => UniverseTopology::Flat,
         };
     }
+
+    fn get_index(&self, row: u32, column: u32) -> usize {
+        (row * self.width + column) as usize
+    }
+
+    fn add_u32_i32(&self, u: u32, i: i32, modulo: u32) -> u32 {
+        (u as i64 + i as i64).rem_euclid(modulo as i64) as u32
+    }
+
+    fn randomize_apple(&mut self) {
+        let apple_x = random_position(self.width.try_into().unwrap()) as u32;
+        let apple_y = random_position(self.height.try_into().unwrap()) as u32;
+        let apple_index = self.get_index(apple_y, apple_x);
+
+        if self.cells[apple_index] == Cell::Dead {
+            self.cells[apple_index] = Cell::Alive;
+        } else {
+            self.randomize_apple();
+        }
+
+        self.apple = Some(Position { x: apple_x, y: apple_y });
+    }
 }
 
+// === Traits ===
 impl fmt::Display for Universe {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for line in self.cells.as_slice().chunks(self.width as usize) {
@@ -327,13 +305,13 @@ impl fmt::Display for Universe {
                 let symbol = if cell == Cell::Dead { '◻' } else { '◼' };
                 write!(f, "{}", symbol)?;
             }
-            write!(f, "\n")?;
+            writeln!(f)?;
         }
-
         Ok(())
     }
 }
 
+// === Utility ===
 #[wasm_bindgen]
 pub fn random_position(max: i32) -> i32 {
     (random() * (max as f64)).floor() as i32
