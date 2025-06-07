@@ -398,7 +398,7 @@ Our game `Universe` will contain:
 
 We can create `Universe` by the following constructor:
 
-```
+```rust
 #[wasm_bindgen]
 impl Universe {
     pub fn new(snake: Snake, fps_target: f64) -> Universe {
